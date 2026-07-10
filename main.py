@@ -1,12 +1,13 @@
 import asyncio
 import logging
 import os
+from datetime import datetime, timedelta, timezone
 
 import aiohttp
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.filters import CommandStart
+from aiogram.filters import Command, CommandStart
 from aiogram.types import Message
 from aiogram.utils.keyboard import ReplyKeyboardBuilder
 from dotenv import load_dotenv
@@ -15,21 +16,14 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
 WEATHER_URL = "https://api.openweathermap.org/data/2.5/weather"
+TIMEOUT = aiohttp.ClientTimeout(total=15)
 
 dp = Dispatcher()
 
 WEATHER_EMOJI = {
-    "Clear": "☀️",
-    "Clouds": "☁️",
-    "Rain": "🌧",
-    "Drizzle": "🌦",
-    "Thunderstorm": "⛈",
-    "Snow": "❄️",
-    "Mist": "🌫",
-    "Fog": "🌫",
-    "Haze": "🌫",
+    "Clear": "☀️", "Clouds": "☁️", "Rain": "🌧", "Drizzle": "🌦",
+    "Thunderstorm": "⛈", "Snow": "❄️", "Mist": "🌫", "Fog": "🌫", "Haze": "🌫",
 }
-
 POPULAR_CITIES = ["Toshkent", "Samarqand", "Buxoro", "Namangan", "Andijon", "Nukus"]
 
 
@@ -43,12 +37,16 @@ def cities_keyboard():
 
 async def get_weather(city: str) -> dict | None:
     params = {"q": city, "appid": WEATHER_API_KEY, "units": "metric", "lang": "en"}
-    async with aiohttp.ClientSession() as session:
-        async with session.get(WEATHER_URL, params=params) as resp:
-            data = await resp.json()
-    if str(data.get("cod")) == "200":
-        return data
-    return None
+    try:
+        async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
+            async with session.get(WEATHER_URL, params=params) as resp:
+                return await resp.json()
+    except (aiohttp.ClientError, asyncio.TimeoutError):
+        return None
+
+
+def fmt_time(ts: int, tz_offset: int) -> str:
+    return (datetime.fromtimestamp(ts, tz=timezone.utc) + timedelta(seconds=tz_offset)).strftime("%H:%M")
 
 
 @dp.message(CommandStart())
@@ -60,33 +58,51 @@ async def start(message: Message):
     )
 
 
+@dp.message(Command("help"))
+async def help_cmd(message: Message):
+    await message.answer(
+        "🌤 <b>Ob-havo Bot</b> — yordam\n\n"
+        "• Shahar nomini yozing → real vaqtli ob-havo\n"
+        "• Tugmalardan mashhur shaharlarni tanlang\n"
+        "• /start, /help"
+    )
+
+
 @dp.message(F.text)
 async def weather(message: Message):
-    if not WEATHER_API_KEY:
+    if not WEATHER_API_KEY or WEATHER_API_KEY == "your_openweathermap_api_key":
         await message.answer("⚠️ WEATHER_API_KEY sozlanmagan. .env faylini tekshiring.")
         return
 
-    city = message.text.strip()
-    data = await get_weather(city)
-    if not data:
+    await message.bot.send_chat_action(message.chat.id, "typing")
+    data = await get_weather(message.text.strip())
+    if data is None:
+        await message.answer("🌐 Tarmoqda muammo. Birozdan so'ng qayta urinib ko'ring.")
+        return
+    if str(data.get("cod")) != "200":
         await message.answer("❌ Bunday shahar topilmadi. Nomini tekshirib qayta yozing.")
         return
 
-    main_weather = data["weather"][0]["main"]
-    desc = data["weather"][0]["description"].capitalize()
-    emoji = WEATHER_EMOJI.get(main_weather, "🌡")
-    temp = round(data["main"]["temp"])
-    feels = round(data["main"]["feels_like"])
-    humidity = data["main"]["humidity"]
-    wind = data["wind"]["speed"]
+    w = data["weather"][0]
+    main = data.get("main", {})
+    wind = data.get("wind", {})
+    sys = data.get("sys", {})
+    tz = data.get("timezone", 0)
+    emoji = WEATHER_EMOJI.get(w.get("main"), "🌡")
 
-    await message.answer(
-        f"{emoji} <b>{data['name']}</b> ob-havosi\n\n"
-        f"🌡 Harorat: <b>{temp}°C</b> (his qilinishi: {feels}°C)\n"
-        f"📋 Holat: {desc}\n"
-        f"💧 Namlik: {humidity}%\n"
-        f"💨 Shamol: {wind} m/s"
-    )
+    lines = [
+        f"{emoji} <b>{data.get('name')}</b> ob-havosi",
+        "",
+        f"🌡 Harorat: <b>{round(main.get('temp', 0))}°C</b> (his: {round(main.get('feels_like', 0))}°C)",
+        f"🔺 Maks: {round(main.get('temp_max', 0))}°C   🔻 Min: {round(main.get('temp_min', 0))}°C",
+        f"📋 Holat: {w.get('description', '').capitalize()}",
+        f"💧 Namlik: {main.get('humidity', '?')}%",
+        f"🎚 Bosim: {main.get('pressure', '?')} hPa",
+        f"💨 Shamol: {wind.get('speed', '?')} m/s",
+    ]
+    if sys.get("sunrise") and sys.get("sunset"):
+        lines.append(f"🌅 {fmt_time(sys['sunrise'], tz)}   🌇 {fmt_time(sys['sunset'], tz)}")
+    await message.answer("\n".join(lines))
 
 
 async def main():
