@@ -162,6 +162,8 @@ class ErrorMiddleware(BaseMiddleware):
 dp = Dispatcher(storage=MemoryStorage())
 dp.message.middleware(ThrottlingMiddleware(THROTTLE_RATE))
 dp.message.middleware(ErrorMiddleware())
+dp.callback_query.middleware(ThrottlingMiddleware(THROTTLE_RATE))
+dp.callback_query.middleware(ErrorMiddleware())
 
 
 # ─── Keyboardlar ────────────────────────────────────────────────────
@@ -269,7 +271,6 @@ async def cmd_stats(message: Message):
         logger.error("Stats handler xatosi: %s", e)
 
 
-@dp.message(Command("stats"))
 @dp.message(StateFilter(None), F.text)
 async def handle_text(message: Message):
     try:
